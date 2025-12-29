@@ -17,8 +17,8 @@ class Game {
 
         const aspect = window.innerWidth / window.innerHeight;
         const d = 150;
-        this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
-        this.camera.position.set(200, 200, 200);
+        this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 2000);
+        this.camera.position.set(300, 300, 300);
         this.camera.lookAt(0, 0, 0);
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -26,41 +26,68 @@ class Game {
         this.renderer.shadowMap.enabled = true;
         document.body.appendChild(this.renderer.domElement);
 
-        this.scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        // Lights stay forever
+        this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
         const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
-        dirLight.position.set(50, 100, 50);
+        dirLight.position.set(100, 200, 50);
         dirLight.castShadow = true;
         this.scene.add(dirLight);
 
-        // This group will hold ALL game objects (lanes, cars, logs)
-        this.worldGroup = new THREE.Group();
-        this.scene.add(this.worldGroup);
+        // Container for all gameplay objects
+        this.worldContainer = new THREE.Group();
+        this.scene.add(this.worldContainer);
+    }
+
+    // This removes EVERY car, log, and lane from the previous game
+    cleanup() {
+        this.isGameOver = true; // Stop logic briefly
+        
+        // 1. Remove everything from the worldContainer
+        while(this.worldContainer.children.length > 0) {
+            const object = this.worldContainer.children[0];
+            
+            // Dispose of GPU resources to prevent "ghosting"
+            if (object.geometry) object.geometry.dispose();
+            if (object.material) {
+                if (Array.isArray(object.material)) {
+                    object.material.forEach(m => m.dispose());
+                } else {
+                    object.material.dispose();
+                }
+            }
+            this.worldContainer.remove(object);
+        }
+
+        // 2. Remove the Panther specifically
+        if (this.player) {
+            this.scene.remove(this.player);
+            this.player = null;
+        }
+
+        // 3. Clear the logic array
+        this.lanes = [];
     }
 
     initGame() {
-        // 1. COMPLETELY CLEAR THE WORLD
-        while(this.worldGroup.children.length > 0) {
-            this.worldGroup.remove(this.worldGroup.children[0]);
-        }
+        this.cleanup();
 
-        // 2. Reset Variables
-        this.lanes = [];
+        // Reset state
         this.gridX = 0;
         this.gridZ = 0;
         this.targetPos = new THREE.Vector3(0, 0, 0);
-        this.isMoving = false;
         this.score = 0;
+        this.isMoving = false;
         this.isGameOver = false;
 
-        // 3. Reset Panther
-        if (this.player) this.scene.remove(this.player);
+        // Create new Panther
         this.player = createPanther();
         this.scene.add(this.player);
 
+        // UI Reset
         document.getElementById('score').innerText = `Score: 0`;
         document.getElementById('game-over').classList.add('hidden');
 
-        // 4. Generate Starting Lanes
+        // Initial Map Generation
         for (let i = 0; i < 40; i++) {
             this.addLane(i);
         }
@@ -68,7 +95,6 @@ class Game {
 
     addLane(index) {
         let type = CONFIG.TYPES.GRASS;
-        // Logic to decide lane type
         if (index > 3) {
             const rand = Math.random();
             if (rand > 0.8) type = CONFIG.TYPES.RIVER;
@@ -78,9 +104,9 @@ class Game {
         const lane = new Lane(index, type);
         this.lanes.push(lane);
         
-        // Add lane floor and all its obstacles to the world group
-        this.worldGroup.add(lane.mesh);
-        lane.obstacles.forEach(o => this.worldGroup.add(o));
+        // Add meshes to the world container
+        this.worldContainer.add(lane.mesh);
+        lane.obstacles.forEach(o => this.worldContainer.add(o));
     }
 
     handleInput() {
@@ -114,7 +140,8 @@ class Game {
     }
 
     checkCollisions() {
-        // Find lane index based on actual Z position
+        if (!this.player) return;
+
         const laneIndex = Math.round(Math.abs(this.player.position.z / CONFIG.GRID_SIZE));
         const lane = this.lanes[laneIndex];
         if (!lane) return;
@@ -125,12 +152,10 @@ class Game {
             const dx = Math.abs(this.player.position.x - obj.position.x);
             const dz = Math.abs(this.player.position.z - obj.position.z);
 
-            // Car collision (Road) - increased hit box slightly for fairness
-            if (lane.type === CONFIG.TYPES.ROAD && dx < 35 && dz < 18) {
+            if (lane.type === CONFIG.TYPES.ROAD && dx < 30 && dz < 18) {
                 this.gameOver();
             }
 
-            // Log contact (River)
             if (lane.type === CONFIG.TYPES.RIVER && dx < 40 && dz < 18) {
                 standingOnLog = true;
                 if (!this.isMoving) {
@@ -152,14 +177,13 @@ class Game {
         if (this.isGameOver) return;
         this.isGameOver = true;
         document.getElementById('game-over').classList.remove('hidden');
-        this.player.traverse(c => { if(c.isMesh) c.material.color.set(0xff0000); });
     }
 
     animate() {
         requestAnimationFrame(() => this.animate());
-        if (this.isGameOver) return;
+        if (this.isGameOver || !this.player) return;
 
-        // Player Movement
+        // Panther Lerp
         this.player.position.x += (this.targetPos.x - this.player.position.x) * 0.2;
         this.player.position.z += (this.targetPos.z - this.player.position.z) * 0.2;
 
@@ -167,17 +191,17 @@ class Game {
             .distanceTo(new THREE.Vector2(this.targetPos.x, this.targetPos.z));
 
         if (dist > 0.5) {
-            this.player.position.y = Math.sin((dist / CONFIG.GRID_SIZE) * Math.PI) * 20;
+            this.player.position.y = Math.sin((dist / CONFIG.GRID_SIZE) * Math.PI) * 18;
         } else {
             this.player.position.y = 0;
             this.isMoving = false;
         }
 
-        // Update Obstacles
+        // Update active lanes
         this.lanes.forEach(l => l.update());
         this.checkCollisions();
 
-        // Camera Follow
+        // Smooth Camera
         const camX = this.player.position.x + 200;
         const camZ = this.player.position.z + 200;
         this.camera.position.x += (camX - this.camera.position.x) * 0.1;
