@@ -15,10 +15,11 @@ class Game {
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x87ceeb);
 
-        // Camera setup (Isometric Orthographic)
         const aspect = window.innerWidth / window.innerHeight;
-        const d = 250;
-        this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
+        const d = 200; // Camera zoom level
+        this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 2000);
+        
+        // Initial camera position
         this.camera.position.set(300, 300, 300);
         this.camera.lookAt(0, 0, 0);
 
@@ -41,18 +42,22 @@ class Game {
         this.player = createPanther();
         this.scene.add(this.player);
 
-        this.playerGridPos = { x: 0, z: 0 };
-        this.targetPos = { x: 0, z: 0 };
+        // Movement state
+        this.gridX = 0; // Horizontal grid position
+        this.gridZ = 0; // Forward grid position (0 is start)
+        
+        this.targetPos = new THREE.Vector3(0, 0, 0);
         this.isMoving = false;
         this.score = 0;
         this.highScore = localStorage.getItem('pantherHighScore') || 0;
         this.isGameOver = false;
 
         document.getElementById('high-score').innerText = `Best: ${this.highScore}`;
+        document.getElementById('score').innerText = `Score: 0`;
         document.getElementById('game-over').classList.add('hidden');
 
-        // Generate initial safe zone
-        for (let i = 0; i < 25; i++) {
+        // Generate starting environment
+        for (let i = 0; i < 30; i++) {
             this.addLane(i);
         }
     }
@@ -61,7 +66,7 @@ class Game {
         let type = CONFIG.TYPES.GRASS;
         if (index > 3) {
             const rand = Math.random();
-            if (rand > 0.7) type = CONFIG.TYPES.RIVER;
+            if (rand > 0.8) type = CONFIG.TYPES.RIVER;
             else if (rand > 0.4) type = CONFIG.TYPES.ROAD;
         }
         const lane = new Lane(index, type);
@@ -76,70 +81,97 @@ class Game {
 
             if (e.key === 'ArrowUp' || e.key === 'w') this.move(0, 1);
             if (e.key === 'ArrowDown' || e.key === 's') this.move(0, -1);
-            if (e.key === 'ArrowLeft' || e.key === 'a') this.move(1, 0);
-            if (e.key === 'ArrowRight' || e.key === 'd') this.move(-1, 0);
+            if (e.key === 'ArrowLeft' || e.key === 'a') this.move(-1, 0);
+            if (e.key === 'ArrowRight' || e.key === 'd') this.move(1, 0);
         });
 
-        document.getElementById('retry-btn').onclick = () => location.reload();
+        document.getElementById('retry-btn').onclick = () => {
+            // Simple reset: clear scene and re-init
+            while(this.scene.children.length > 0){ 
+                this.scene.remove(this.scene.children[0]); 
+            }
+            this.initGame();
+        };
     }
 
-    move(x, z) {
-        this.targetPos.x = this.playerGridPos.x + x * CONFIG.GRID_SIZE;
-        this.targetPos.z = this.playerGridPos.z - z * CONFIG.GRID_SIZE;
-        
+    move(dirX, dirZ) {
+        // Update Grid Coordinates
+        const nextGridX = this.gridX + dirX;
+        const nextGridZ = this.gridZ + dirZ;
+
         // Boundaries
-        if (Math.abs(this.targetPos.x) > 200) return;
+        if (nextGridZ < 0) return; // Don't go back past start
+        if (Math.abs(nextGridX) > 5) return; // Side boundaries
+
+        this.gridX = nextGridX;
+        this.gridZ = nextGridZ;
+
+        // Calculate 3D target position based on Grid
+        // Multiplied by Grid Size. Z is negative because Forward in Three.js is -Z
+        this.targetPos.x = this.gridX * CONFIG.GRID_SIZE;
+        this.targetPos.z = -this.gridZ * CONFIG.GRID_SIZE;
 
         this.isMoving = true;
-        if (z > 0) {
-            this.score = Math.max(this.score, ++this.playerGridPos.z);
+
+        // Update Score
+        if (this.gridZ > this.score) {
+            this.score = this.gridZ;
             document.getElementById('score').innerText = `Score: ${this.score}`;
             
-            // Generate more lanes
-            if (this.score + 15 > this.lanes.length) {
+            // Add new lanes as we progress
+            if (this.score + 20 > this.lanes.length) {
                 this.addLane(this.lanes.length);
             }
-        } else if (z < 0) {
-            this.playerGridPos.z--;
         }
-        
-        if (x !== 0) this.playerGridPos.x += x * CONFIG.GRID_SIZE;
     }
 
     checkCollisions() {
-        const currentLaneIndex = Math.round(Math.abs(this.player.position.z / CONFIG.GRID_SIZE));
+        // Which lane is the panther currently on?
+        const currentLaneIndex = this.gridZ;
         const lane = this.lanes[currentLaneIndex];
 
         if (!lane) return;
 
         let onLog = false;
+        
+        // Check obstacles in the current lane
         lane.obstacles.forEach(obj => {
+            // Distance check between panther and obstacle
             const dx = Math.abs(this.player.position.x - obj.position.x);
-            const dz = Math.abs(this.player.position.z - obj.position.z);
-
-            if (dx < 30 && dz < 20) {
-                if (lane.type === CONFIG.TYPES.ROAD) this.gameOver();
-                if (lane.type === CONFIG.TYPES.RIVER) onLog = true;
+            
+            // If panther is within obstacle width
+            if (dx < 25) {
+                if (lane.type === CONFIG.TYPES.ROAD) {
+                    this.gameOver();
+                }
+                if (lane.type === CONFIG.TYPES.RIVER) {
+                    onLog = true;
+                    // Panther hitches a ride on the log
+                    this.player.position.x += lane.speed * lane.direction;
+                    this.targetPos.x = this.player.position.x;
+                    // Sync gridX back from world position so movement remains consistent
+                    this.gridX = this.player.position.x / CONFIG.GRID_SIZE;
+                }
             }
         });
 
-        if (lane.type === CONFIG.TYPES.RIVER) {
-            if (!onLog) {
-                this.gameOver();
-            } else {
-                // Move with log
-                this.player.position.x += lane.speed * lane.direction;
-                this.targetPos.x = this.player.position.x;
-            }
+        // Water death
+        if (lane.type === CONFIG.TYPES.RIVER && !onLog && !this.isMoving) {
+            this.gameOver();
         }
 
-        // Out of bounds check
-        if (Math.abs(this.player.position.x) > 250) this.gameOver();
+        // Out of bounds death (pushed off screen by logs)
+        if (Math.abs(this.player.position.x) > 220) {
+            this.gameOver();
+        }
     }
 
     gameOver() {
+        if (this.isGameOver) return;
         this.isGameOver = true;
+        
         if (this.score > this.highScore) {
+            this.highScore = this.score;
             localStorage.setItem('pantherHighScore', this.score);
         }
         document.getElementById('game-over').classList.remove('hidden');
@@ -149,26 +181,37 @@ class Game {
         requestAnimationFrame(() => this.animate());
 
         if (!this.isGameOver) {
-            // Smooth movement lerp
-            this.player.position.x += (this.targetPos.x - this.player.position.x) * CONFIG.PLAYER_SPEED;
-            this.player.position.z += (this.targetPos.z - this.player.position.z) * CONFIG.PLAYER_SPEED;
+            // 1. Smoothly interpolate (Lerp) toward the target grid position
+            const moveStep = 0.15;
+            this.player.position.x += (this.targetPos.x - this.player.position.x) * moveStep;
+            this.player.position.z += (this.targetPos.z - this.player.position.z) * moveStep;
             
-            // Jump arc
-            const dist = Math.sqrt(Math.pow(this.targetPos.x - this.player.position.x, 2) + Math.pow(this.targetPos.z - this.player.position.z, 2));
-            this.player.position.y = Math.sin((dist / CONFIG.GRID_SIZE) * Math.PI) * 20;
-
-            if (dist < 1) {
+            // 2. Jumping Animation (Sine wave based on distance to target)
+            const distance = this.player.position.distanceTo(this.targetPos);
+            if (distance > 1) {
+                // The panther is mid-hop
+                this.player.position.y = Math.sin((distance / CONFIG.GRID_SIZE) * Math.PI) * 15;
+            } else {
+                // The hop is finished
                 this.isMoving = false;
                 this.player.position.y = 0;
             }
 
+            // 3. Update lane obstacles (cars/logs)
             this.lanes.forEach(lane => lane.update());
+
+            // 4. Collision Logic
             this.checkCollisions();
         }
 
-        // Camera follow
-        this.camera.position.z += (this.player.position.z + 300 - this.camera.position.z) * 0.1;
-        this.camera.position.x += (this.player.position.x + 300 - this.camera.position.x) * 0.1;
+        // 5. Camera follow (Smooth lerp)
+        // We offset the camera relative to the panther's current position
+        const camTargetX = this.player.position.x + 300;
+        const camTargetZ = this.player.position.z + 300;
+        
+        this.camera.position.x += (camTargetX - this.camera.position.x) * 0.05;
+        this.camera.position.z += (camTargetZ - this.camera.position.z) * 0.05;
+        this.camera.lookAt(this.player.position.x, 0, this.player.position.z);
 
         this.renderer.render(this.scene, this.camera);
     }
