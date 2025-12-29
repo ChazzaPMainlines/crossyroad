@@ -7,7 +7,10 @@ export class Lane {
         this.index = index;
         this.type = type;
         this.direction = Math.random() > 0.5 ? 1 : -1;
-        this.speed = 1.0 + Math.random() * 2.0;
+        
+        // Slightly randomized speed per lane
+        this.speed = 1.2 + Math.random() * 2.0;
+        
         this.obstacles = [];
         this.mesh = this.createMesh();
 
@@ -26,27 +29,39 @@ export class Lane {
         const mesh = new THREE.Mesh(geometry, material);
         
         mesh.rotation.x = -Math.PI / 2;
-        // Position lanes sequentially along negative Z
+        mesh.position.y = -1; // Keep floor slightly below obstacles
         mesh.position.z = -this.index * CONFIG.GRID_SIZE;
         mesh.receiveShadow = true;
         return mesh;
     }
 
     spawnObstacles() {
+        // Spawn 3 items per lane with significant spacing
         for (let i = 0; i < 3; i++) {
             const obj = this.type === CONFIG.TYPES.ROAD ? createCar() : createLog();
+            
+            // Set Z position to match the lane
             obj.position.z = -this.index * CONFIG.GRID_SIZE;
-            obj.position.x = (i * 350) - 500;
+            
+            // Initial X spacing
+            obj.position.x = -400 + (i * 350); 
+            
+            // Add to the tracking array
             this.obstacles.push(obj);
         }
     }
 
     update() {
+        // Move every tracked obstacle
         this.obstacles.forEach(obj => {
             obj.position.x += this.speed * this.direction;
-            // Wrap around
-            if (this.direction > 0 && obj.position.x > 500) obj.position.x = -500;
-            if (this.direction < 0 && obj.position.x < -500) obj.position.x = 500;
+
+            // Seamless wrap-around logic
+            if (this.direction > 0 && obj.position.x > 550) {
+                obj.position.x = -550;
+            } else if (this.direction < 0 && obj.position.x < -550) {
+                obj.position.x = 550;
+            }
         });
     }
 }
